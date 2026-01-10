@@ -8,33 +8,32 @@ import { showToast } from "@vendetta/ui/toasts";
 const { FormSection, FormRow, FormInput } = Forms;
 const { View, Image, Alert } = General;
 
-// Discord Internals
 const UserStore = findByProps("getCurrentUser");
 const TokenStore = findByProps("getToken");
-// We strictly look for the switcher. If it's missing, we won't try to fake it.
-const SwitcherModule = findByProps("switchAccountToken"); 
+const AuthModule = findByProps("switchAccountToken", "login");
 
 function getAvatarUrl(user) {
     if (!user.avatar) return "https://cdn.discordapp.com/embed/avatars/0.png";
     return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
 }
 
-// SAFE SWITCHER - No dangerous fallbacks
-function attemptSwitch(token, name) {
-    if (!token) {
-        return Alert.alert("Error", "This account has no token saved!");
-    }
+// --- CRASH PROOF SWITCHER ---
+function attemptSwitch(token) {
+    if (!token) return;
 
-    if (SwitcherModule && SwitcherModule.switchAccountToken) {
-        showToast(`Switching to ${name}...`, getAvatarUrl({}));
-        SwitcherModule.switchAccountToken(token)
-            .catch(e => {
-                Alert.alert("Switch Failed", "Discord rejected the token. The account might be invalid.");
-                console.error(e);
-            });
-    } else {
-        Alert.alert("Not Supported", "Your Discord version does not support Fast Switching.");
-    }
+    // 1. Show message BEFORE the switch starts
+    showToast("Switching...", getAvatarUrl({}));
+
+    // 2. Wait 100ms to let the toast appear, then kill the session
+    setTimeout(() => {
+        if (AuthModule && AuthModule.switchAccountToken) {
+            // FIRE AND FORGET - Do not use .then() or .catch() here!
+            AuthModule.switchAccountToken(token);
+        } else {
+            // Only alert if the module is totally missing
+            Alert.alert("Error", "Switcher module not found.");
+        }
+    }, 100);
 }
 
 let unpatches = [];
@@ -43,7 +42,7 @@ export default {
     onLoad: () => {
         if (!storage.accounts) storage.accounts = [];
 
-        // --- COMMANDS ---
+        // COMMANDS
         unpatches.push(registerCommand({
             name: "alt save",
             displayName: "alt save",
@@ -73,8 +72,8 @@ export default {
         unpatches.push(registerCommand({
             name: "alt list",
             displayName: "alt list",
-            description: "List saved accounts",
-            displayDescription: "List saved accounts",
+            description: "List accounts",
+            displayDescription: "List accounts",
             execute: () => {
                 if (storage.accounts.length === 0) {
                     showToast("No accounts saved.");
@@ -98,8 +97,9 @@ export default {
                 const nameOption = args.find(a => a.name === "name");
                 const targetName = nameOption?.value?.toLowerCase();
                 const account = storage.accounts.find(acc => acc.name.toLowerCase().includes(targetName));
+                
                 if (account) {
-                    attemptSwitch(account.token, account.name);
+                    attemptSwitch(account.token);
                 } else {
                     showToast("Account not found.");
                 }
@@ -163,7 +163,7 @@ export default {
                             onPress={() => {
                                 Alert.alert("Switch Account", `Log in as ${acc.name}?`, [
                                     { text: "Cancel", style: "cancel" },
-                                    { text: "Switch", onPress: () => attemptSwitch(acc.token, acc.name) },
+                                    { text: "Switch", onPress: () => attemptSwitch(acc.token) },
                                     { 
                                         text: "Delete", 
                                         style: "destructive", 
