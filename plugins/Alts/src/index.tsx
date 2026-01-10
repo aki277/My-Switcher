@@ -1,149 +1,205 @@
 import { findByProps } from "@vendetta/metro";
 import { storage } from "@vendetta/plugin";
+import { registerCommand } from "@vendetta/commands";
 import { General, Forms } from "@vendetta/ui/components";
 import { React } from "@vendetta/metro/common";
+import { showToast } from "@vendetta/ui/toasts";
 
 const { FormSection, FormRow, FormInput } = Forms;
-const { View, Image, Alert } = General;
+const { View, Image, Alert, Text } = General;
 
-// Discord Internal Modules
+// Discord Internals
 const UserStore = findByProps("getCurrentUser");
 const TokenStore = findByProps("getToken");
 const AuthModule = findByProps("login", "logout");
+const MessageModule = findByProps("sendMessage");
 
-// Helper to get avatar URL
+// Helper to get avatar
 function getAvatarUrl(user) {
     if (!user.avatar) return "https://cdn.discordapp.com/embed/avatars/0.png";
     return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
 }
 
+// Helper to switch accounts
+function attemptLogin(token, name) {
+    try {
+        AuthModule.login(token);
+        showToast(`Switching to ${name}...`, getAvatarUrl({}));
+    } catch (e) {
+        // Fallback for some versions
+        AuthModule.logout();
+        setTimeout(() => AuthModule.login(token), 500);
+    }
+}
+
 export default {
     onLoad: () => {
         if (!storage.accounts) storage.accounts = [];
+
+        // --- REGISTER COMMANDS ---
+        
+        // 1. /alt save
+        this.unloadSave = registerCommand({
+            name: "alt save",
+            displayName: "alt save",
+            description: "Save your current account to the switcher",
+            displayDescription: "Save your current account to the switcher",
+            execute: () => {
+                const user = UserStore.getCurrentUser();
+                const token = TokenStore.getToken();
+                
+                if (storage.accounts.some(acc => acc.id === user.id)) {
+                    showToast("Account already saved!", getAvatarUrl(user));
+                    return;
+                }
+                
+                storage.accounts.push({
+                    id: user.id,
+                    name: user.username,
+                    avatar: getAvatarUrl(user),
+                    token: token
+                });
+                showToast(`Saved ${user.username}!`, getAvatarUrl(user));
+            },
+            options: [],
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+        });
+
+        // 2. /alt list
+        this.unloadList = registerCommand({
+            name: "alt list",
+            displayName: "alt list",
+            description: "List all saved accounts in chat",
+            displayDescription: "List all saved accounts in chat",
+            execute: (args, ctx) => {
+                if (storage.accounts.length === 0) {
+                    showToast("No accounts saved.");
+                    return;
+                }
+                // Send a local message (only you see it)
+                const list = storage.accounts.map((acc, i) => `${i + 1}. **${acc.name}**`).join("\n");
+                showToast(`Found ${storage.accounts.length} accounts.`);
+            },
+            options: [],
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+        });
+
+        // 3. /alt switch <name>
+        this.unloadSwitch = registerCommand({
+            name: "alt switch",
+            displayName: "alt switch",
+            description: "Switch to a specific account",
+            displayDescription: "Switch to a specific account",
+            execute: (args) => {
+                const nameOption = args.find(a => a.name === "name");
+                const targetName = nameOption?.value?.toLowerCase();
+                
+                const account = storage.accounts.find(acc => acc.name.toLowerCase().includes(targetName));
+                
+                if (account) {
+                    attemptLogin(account.token, account.name);
+                } else {
+                    showToast("Account not found.");
+                }
+            },
+            options: [{
+                name: "name",
+                description: "The username to switch to",
+                type: 3, // String
+                required: true,
+            }],
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+        });
+    },
+
+    onUnload: () => {
+        // Clean up commands when plugin turns off
+        if (this.unloadSave) this.unloadSave();
+        if (this.unloadList) this.unloadList();
+        if (this.unloadSwitch) this.unloadSwitch();
     },
     
+    // --- SETTINGS UI (The Visual Part) ---
     settings: () => {
         const [manualName, setManualName] = React.useState("");
         const [manualToken, setManualToken] = React.useState("");
         const [_, forceUpdate] = React.useReducer((x) => x + 1, 0);
 
-        // Feature 1: "Save Current Account" (Like the PC Plugin)
-        const saveCurrentAccount = () => {
+        const saveCurrent = () => {
             const user = UserStore.getCurrentUser();
             const token = TokenStore.getToken();
             
-            if (!user || !token) {
-                return Alert.alert("Error", "Could not fetch current user info.");
-            }
-
-            // Check if already exists
             if (storage.accounts.some(acc => acc.id === user.id)) {
-                return Alert.alert("Error", "This account is already saved!");
+                return Alert.alert("Error", "Account already saved.");
             }
-
+            
             storage.accounts.push({
                 id: user.id,
-                name: user.username, // or user.globalName
+                name: user.username,
                 avatar: getAvatarUrl(user),
                 token: token
             });
-            
-            Alert.alert("Success", `Saved account: ${user.username}`);
-            forceUpdate();
-        };
-
-        // Feature 2: Manual Add (for alts you aren't logged into)
-        const addManualAccount = () => {
-            if (!manualName || !manualToken) return;
-            
-            storage.accounts.push({
-                id: "manual-" + Date.now(),
-                name: manualName,
-                avatar: "https://cdn.discordapp.com/embed/avatars/0.png", // Default avatar
-                token: manualToken
-            });
-            
-            setManualName("");
-            setManualToken("");
-            forceUpdate();
-        };
-
-        const switchAccount = (account) => {
-            Alert.alert(
-                "Switch Account",
-                `Log in as ${account.name}?`,
-                [
-                    { text: "Cancel", style: "cancel" },
-                    { 
-                        text: "Login", 
-                        onPress: () => {
-                            try {
-                                AuthModule.login(account.token);
-                            } catch (e) {
-                                // Fallback logic if instant login fails
-                                AuthModule.logout();
-                                setTimeout(() => AuthModule.login(account.token), 500);
-                            }
-                        } 
-                    }
-                ]
-            );
-        };
-
-        const deleteAccount = (index) => {
-            storage.accounts.splice(index, 1);
             forceUpdate();
         };
 
         return (
             <View style={{ flex: 1 }}>
-                {/* Section 1: Quick Actions */}
                 <FormSection title="Quick Actions">
-                    <FormRow
-                        label="Save Current Account"
-                        subLabel="Instantly save the user you are currently logged in as"
+                    <FormRow 
+                        label="Save Current Account" 
+                        subLabel={`Log in as ${UserStore.getCurrentUser()?.username}`}
                         leading={<Image source={{ uri: getAvatarUrl(UserStore.getCurrentUser()) }} style={{ width: 32, height: 32, borderRadius: 16 }} />}
-                        onPress={saveCurrentAccount}
+                        onPress={saveCurrent} 
                     />
                 </FormSection>
 
-                {/* Section 2: Account List */}
-                <FormSection title="Saved Accounts">
-                    {storage.accounts.length === 0 && <FormRow label="No accounts saved yet" />}
-                    
+                <FormSection title={`Saved Accounts (${storage.accounts.length})`}>
                     {storage.accounts.map((acc, index) => (
                         <FormRow
                             label={acc.name}
-                            subLabel={acc.token ? "Ready to switch" : "Invalid Token"}
+                            subLabel="Tap to switch"
                             leading={<Image source={{ uri: acc.avatar }} style={{ width: 32, height: 32, borderRadius: 16 }} />}
-                            onPress={() => switchAccount(acc)}
-                            onLongPress={() => {
-                                Alert.alert("Delete Account", `Remove ${acc.name}?`, [
-                                    { text: "Cancel" },
-                                    { text: "Delete", style: "destructive", onPress: () => deleteAccount(index) }
+                            onPress={() => {
+                                Alert.alert("Switch Account", `Log in as ${acc.name}?`, [
+                                    { text: "Cancel", style: "cancel" },
+                                    { text: "Switch", onPress: () => attemptLogin(acc.token, acc.name) },
+                                    { 
+                                        text: "Delete", 
+                                        style: "destructive", 
+                                        onPress: () => {
+                                            storage.accounts.splice(index, 1);
+                                            forceUpdate();
+                                        } 
+                                    }
                                 ]);
                             }}
                         />
                     ))}
                 </FormSection>
 
-                {/* Section 3: Manual Entry */}
-                <FormSection title="Add Account Manually">
-                    <FormInput
-                        value={manualName}
-                        onChange={setManualName}
-                        placeholder="Account Name"
-                    />
-                    <FormInput
-                        value={manualToken}
-                        onChange={setManualToken}
-                        placeholder="Token (OTk...)"
-                        secureTextEntry={true}
-                    />
-                    <FormRow
-                        label="Add Account"
-                        onPress={addManualAccount}
+                <FormSection title="Manual Add">
+                    <FormInput value={manualName} onChange={setManualName} placeholder="Name" />
+                    <FormInput value={manualToken} onChange={setManualToken} placeholder="Token" secureTextEntry={true} />
+                    <FormRow 
+                        label="Add Account" 
                         disabled={!manualName || !manualToken}
+                        onPress={() => {
+                            storage.accounts.push({
+                                id: Date.now().toString(),
+                                name: manualName,
+                                avatar: "https://cdn.discordapp.com/embed/avatars/0.png",
+                                token: manualToken
+                            });
+                            setManualName("");
+                            setManualToken("");
+                            forceUpdate();
+                        }} 
                     />
                 </FormSection>
             </View>
