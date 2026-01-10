@@ -8,32 +8,32 @@ import { showToast } from "@vendetta/ui/toasts";
 const { FormSection, FormRow, FormInput } = Forms;
 const { View, Image, Alert } = General;
 
-// Discord Internals - Updated to find the Switcher function
+// Discord Internals
 const UserStore = findByProps("getCurrentUser");
 const TokenStore = findByProps("getToken");
-const AuthModule = findByProps("login", "logout", "switchAccountToken"); 
+// We strictly look for the switcher. If it's missing, we won't try to fake it.
+const SwitcherModule = findByProps("switchAccountToken"); 
 
-// Helper to get avatar
 function getAvatarUrl(user) {
     if (!user.avatar) return "https://cdn.discordapp.com/embed/avatars/0.png";
     return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
 }
 
-// SAFE LOGIN FUNCTION
-function attemptLogin(token, name) {
-    showToast(`Switching to ${name}...`, getAvatarUrl({}));
-    
-    // Method 1: Try the modern Account Switcher method (Best for mobile)
-    if (AuthModule.switchAccountToken) {
-        AuthModule.switchAccountToken(token)
+// SAFE SWITCHER - No dangerous fallbacks
+function attemptSwitch(token, name) {
+    if (!token) {
+        return Alert.alert("Error", "This account has no token saved!");
+    }
+
+    if (SwitcherModule && SwitcherModule.switchAccountToken) {
+        showToast(`Switching to ${name}...`, getAvatarUrl({}));
+        SwitcherModule.switchAccountToken(token)
             .catch(e => {
-                // Method 2: Fallback if Method 1 fails
-                console.log("Switch failed, trying standard login");
-                AuthModule.login(token);
+                Alert.alert("Switch Failed", "Discord rejected the token. The account might be invalid.");
+                console.error(e);
             });
     } else {
-        // Method 3: Old fallback
-        AuthModule.login(token);
+        Alert.alert("Not Supported", "Your Discord version does not support Fast Switching.");
     }
 }
 
@@ -99,7 +99,7 @@ export default {
                 const targetName = nameOption?.value?.toLowerCase();
                 const account = storage.accounts.find(acc => acc.name.toLowerCase().includes(targetName));
                 if (account) {
-                    attemptLogin(account.token, account.name);
+                    attemptSwitch(account.token, account.name);
                 } else {
                     showToast("Account not found.");
                 }
@@ -163,7 +163,7 @@ export default {
                             onPress={() => {
                                 Alert.alert("Switch Account", `Log in as ${acc.name}?`, [
                                     { text: "Cancel", style: "cancel" },
-                                    { text: "Switch", onPress: () => attemptLogin(acc.token, acc.name) },
+                                    { text: "Switch", onPress: () => attemptSwitch(acc.token, acc.name) },
                                     { 
                                         text: "Delete", 
                                         style: "destructive", 
