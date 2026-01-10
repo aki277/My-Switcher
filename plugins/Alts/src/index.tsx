@@ -8,10 +8,10 @@ import { showToast } from "@vendetta/ui/toasts";
 const { FormSection, FormRow, FormInput } = Forms;
 const { View, Image, Alert } = General;
 
-// Discord Internals
+// Discord Internals - Updated to find the Switcher function
 const UserStore = findByProps("getCurrentUser");
 const TokenStore = findByProps("getToken");
-const AuthModule = findByProps("login", "logout");
+const AuthModule = findByProps("login", "logout", "switchAccountToken"); 
 
 // Helper to get avatar
 function getAvatarUrl(user) {
@@ -19,27 +19,31 @@ function getAvatarUrl(user) {
     return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
 }
 
-// Helper to switch accounts
+// SAFE LOGIN FUNCTION
 function attemptLogin(token, name) {
-    try {
+    showToast(`Switching to ${name}...`, getAvatarUrl({}));
+    
+    // Method 1: Try the modern Account Switcher method (Best for mobile)
+    if (AuthModule.switchAccountToken) {
+        AuthModule.switchAccountToken(token)
+            .catch(e => {
+                // Method 2: Fallback if Method 1 fails
+                console.log("Switch failed, trying standard login");
+                AuthModule.login(token);
+            });
+    } else {
+        // Method 3: Old fallback
         AuthModule.login(token);
-        showToast(`Switching to ${name}...`, getAvatarUrl({}));
-    } catch (e) {
-        AuthModule.logout();
-        setTimeout(() => AuthModule.login(token), 500);
     }
 }
 
-// SAFE STORAGE FOR COMMANDS (Prevents the crash)
 let unpatches = [];
 
 export default {
     onLoad: () => {
         if (!storage.accounts) storage.accounts = [];
 
-        // --- REGISTER COMMANDS ---
-        
-        // 1. /alt save
+        // --- COMMANDS ---
         unpatches.push(registerCommand({
             name: "alt save",
             displayName: "alt save",
@@ -48,12 +52,10 @@ export default {
             execute: () => {
                 const user = UserStore.getCurrentUser();
                 const token = TokenStore.getToken();
-                
                 if (storage.accounts.some(acc => acc.id === user.id)) {
                     showToast("Already saved!", getAvatarUrl(user));
                     return;
                 }
-                
                 storage.accounts.push({
                     id: user.id,
                     name: user.username,
@@ -68,7 +70,6 @@ export default {
             type: 1,
         }));
 
-        // 2. /alt list
         unpatches.push(registerCommand({
             name: "alt list",
             displayName: "alt list",
@@ -88,7 +89,6 @@ export default {
             type: 1,
         }));
 
-        // 3. /alt switch <name>
         unpatches.push(registerCommand({
             name: "alt switch",
             displayName: "alt switch",
@@ -98,7 +98,6 @@ export default {
                 const nameOption = args.find(a => a.name === "name");
                 const targetName = nameOption?.value?.toLowerCase();
                 const account = storage.accounts.find(acc => acc.name.toLowerCase().includes(targetName));
-                
                 if (account) {
                     attemptLogin(account.token, account.name);
                 } else {
@@ -118,7 +117,6 @@ export default {
     },
 
     onUnload: () => {
-        // Clean up all commands safely
         for (const unpatch of unpatches) {
             unpatch();
         }
@@ -133,7 +131,6 @@ export default {
         const saveCurrent = () => {
             const user = UserStore.getCurrentUser();
             const token = TokenStore.getToken();
-            
             if (storage.accounts.some(acc => acc.id === user.id)) {
                 return Alert.alert("Error", "Already saved.");
             }
