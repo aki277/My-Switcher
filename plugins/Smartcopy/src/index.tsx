@@ -4,162 +4,224 @@ import { showToast } from "@vendetta/ui/toasts";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { Forms, General } from "@vendetta/ui/components";
 import { modules } from "@vendetta/metro";
+import { storage } from "@vendetta/plugin";
 
-const { FormSection, FormRow } = Forms;
+const { FormSection, FormRow, FormSwitch } = Forms;
 const { View } = General;
 
-// 1. Safe Channel Finder
+// 1. Safe Modules
 const ChannelStore = findByProps("getChannelId");
 const SelectedChannelStore = findByProps("getChannelId", "getVoiceChannelId");
 const Clipboard = findByProps("setString");
+const Dispatcher = findByProps("subscribe", "dispatch");
+const UserStore = findByProps("getUser");
 
 const CODE_REGEX = /```([\s\S]+?)```/;
 
-// --- THE STORE HUNTER ---
-// Finds the REAL MessageStore by testing them
+// 2. The Store Hunter (Keep this, it's the only thing that works for you)
 function findRealMessageStore(channelId) {
-    // 1. Get all modules with 'getMessages'
-    const candidates = [];
     const allIds = Object.keys(modules);
-    
+    const candidates = [];
     for (const id of allIds) {
         const mod = modules[id]?.publicModule?.exports;
-        if (mod && mod.getMessages && typeof mod.getMessages === 'function') {
-            candidates.push(mod);
-        } else if (mod && mod.default && mod.default.getMessages && typeof mod.default.getMessages === 'function') {
-            candidates.push(mod.default);
-        }
+        if (mod && mod.getMessages) candidates.push(mod);
+        else if (mod && mod.default && mod.default.getMessages) candidates.push(mod.default);
     }
-
-    // 2. Test them!
     for (const candidate of candidates) {
         try {
             const result = candidate.getMessages(channelId);
-            // If it returns a Map or Array with items, we found it!
-            if (result && (result._array || result.length > 0 || (result.size && result.size > 0))) {
-                return candidate;
-            }
-        } catch (e) {
-            // Ignore crashes during testing
-        }
+            if (result && (result._array || result.length > 0 || result.size > 0)) return candidate;
+        } catch (e) {}
     }
     return null;
 }
 
-function runCopyLogic() {
+// 3. Extraction Logic
+function attemptCopy(channelId, authorId) {
     try {
-        // 1. Get Channel
-        const channelId = ChannelStore?.getChannelId() || SelectedChannelStore?.getChannelId();
-        if (!channelId) return showToast("Error: No Channel ID found.", "ic_warning");
+        // FILTER CHECK: 
+        // If we have targets, and this author isn't one of them, STOP.
+        if (storage.targets && storage.targets.length > 0 && authorId) {
+            if (!storage.targets.includes(authorId)) {
+                // console.log("Ignored message from non-target user");
+                return "IGNORED";
+            }
+        }
 
-        // 2. Find the Store that actually works
         const RealMessageStore = findRealMessageStore(channelId);
-        
-        if (!RealMessageStore) {
-            return showToast("Fatal: Could not find a working MessageStore.", "ic_warning");
-        }
+        if (!RealMessageStore) return "NO_STORE";
 
-        // 3. Get Messages
         const messagesObj = RealMessageStore.getMessages(channelId);
-        // Handle Map vs Array
         let messages = [];
-        if (Array.isArray(messagesObj)) {
-            messages = messagesObj;
-        } else if (messagesObj._array) {
-            messages = messagesObj._array; // Common in Flux stores
-        } else if (typeof messagesObj.toArray === 'function') {
-            messages = messagesObj.toArray();
-        } else {
-            messages = Object.values(messagesObj);
-        }
+        if (Array.isArray(messagesObj)) messages = messagesObj;
+        else if (messagesObj._array) messages = messagesObj._array;
+        else if (typeof messagesObj.toArray === 'function') messages = messagesObj.toArray();
+        else messages = Object.values(messagesObj);
 
-        if (!messages || messages.length === 0) {
-            return showToast("Chat seems empty (or store failed).", "ic_warning");
-        }
+        if (!messages || messages.length === 0) return "EMPTY";
 
-        // 4. Scan for Code (Newest first)
+        // Find newest code
         const foundMsg = messages.slice().reverse().find(msg => {
             // Check Content
             if (msg.content && CODE_REGEX.test(msg.content)) return true;
             // Check Embeds
             if (msg.embeds && msg.embeds.length > 0) {
-                return msg.embeds.some(embed => {
-                    if (embed.description && CODE_REGEX.test(embed.description)) return true;
-                    if (embed.fields) return embed.fields.some(f => f.value && CODE_REGEX.test(f.value));
-                    return false;
-                });
+                return msg.embeds.some(e => 
+                    (e.description && CODE_REGEX.test(e.description)) || 
+                    (e.fields && e.fields.some(f => f.value && CODE_REGEX.test(f.value)))
+                );
             }
             return false;
         });
 
         if (foundMsg) {
             let rawCode = "";
-            // Extract logic
             if (foundMsg.content && CODE_REGEX.test(foundMsg.content)) {
                 rawCode = foundMsg.content.match(CODE_REGEX)[1];
             } else if (foundMsg.embeds) {
-                foundMsg.embeds.forEach(embed => {
-                    if (embed.description && CODE_REGEX.test(embed.description)) {
-                        rawCode = embed.description.match(CODE_REGEX)[1];
-                    } else if (embed.fields) {
-                        embed.fields.forEach(f => {
-                            if (f.value && CODE_REGEX.test(f.value)) {
-                                rawCode = f.value.match(CODE_REGEX)[1];
-                            }
-                        });
-                    }
-                });
+                const allText = JSON.stringify(foundMsg.embeds);
+                const match = allText.match(CODE_REGEX);
+                if (match) rawCode = match[1];
             }
 
             if (rawCode) {
-                Clipboard.setString(rawCode.trim());
-                showToast("Copied to Clipboard!", getAssetIDByName("ic_check"));
-            } else {
-                showToast("Extraction failed.", "ic_warning");
+                const clean = rawCode.trim();
+                if (storage.lastCopied === clean) return "DUPLICATE";
+                
+                Clipboard.setString(clean);
+                storage.lastCopied = clean;
+                return "SUCCESS";
             }
-        } else {
-            showToast("No code blocks found recently.", "ic_warning");
         }
-
+        return "NO_CODE";
     } catch (e) {
         console.error(e);
-        showToast(`Crash: ${e.message}`, "ic_warning");
+        return "ERROR";
     }
 }
 
-let unpatch;
+let unpatches = [];
 
 export default {
     onLoad: () => {
-        // Try to register command
-        try {
-            unpatch = registerCommand({
-                name: "copycode",
-                displayName: "copycode",
-                description: "Copy the last codeblock",
-                displayDescription: "Copy the last codeblock",
-                options: [],
-                applicationId: "-1",
-                inputType: 1,
-                type: 1,
-                execute: runCopyLogic
-            });
-        } catch (e) {}
+        // Init Storage
+        if (typeof storage.autoCopy === "undefined") storage.autoCopy = true;
+        if (!storage.targets) storage.targets = []; 
+
+        // COMMAND 1: ADD TARGET
+        unpatches.push(registerCommand({
+            name: "autocopy add",
+            displayName: "autocopy add",
+            description: "Add a bot/user to the watchlist",
+            displayDescription: "Add a bot/user to the watchlist",
+            options: [{ name: "user", description: "The bot to watch", type: 6, required: true }],
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+            execute: (args) => {
+                const userId = args[0].value;
+                if (!storage.targets.includes(userId)) {
+                    storage.targets.push(userId);
+                    showToast("Added to watchlist!", getAssetIDByName("ic_check"));
+                } else {
+                    showToast("Already in watchlist.", "ic_warning");
+                }
+            }
+        }));
+
+        // COMMAND 2: REMOVE TARGET
+        unpatches.push(registerCommand({
+            name: "autocopy remove",
+            displayName: "autocopy remove",
+            description: "Remove a bot from watchlist",
+            displayDescription: "Remove a bot from watchlist",
+            options: [{ name: "user", description: "The bot to remove", type: 6, required: true }],
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+            execute: (args) => {
+                const userId = args[0].value;
+                const idx = storage.targets.indexOf(userId);
+                if (idx > -1) {
+                    storage.targets.splice(idx, 1);
+                    showToast("Removed from watchlist.", getAssetIDByName("ic_trash"));
+                } else {
+                    showToast("User not found in list.", "ic_warning");
+                }
+            }
+        }));
+
+        // COMMAND 3: LIST TARGETS
+        unpatches.push(registerCommand({
+            name: "autocopy list",
+            displayName: "autocopy list",
+            description: "See who you are watching",
+            displayDescription: "See who you are watching",
+            options: [],
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+            execute: () => {
+                if (storage.targets.length === 0) {
+                    showToast("List empty (Copying ALL code)", "ic_info");
+                } else {
+                    // Try to resolve usernames
+                    const names = storage.targets.map(id => {
+                        const u = UserStore.getUser(id);
+                        return u ? u.username : id;
+                    }).join(", ");
+                    showToast(`Watching: ${names}`);
+                }
+            }
+        }));
+
+        // DISPATCHER: Watch for messages
+        const dispatchUnpatch = Dispatcher.subscribe("MESSAGE_CREATE", (event) => {
+            if (!storage.autoCopy) return;
+            
+            const currentChannel = ChannelStore?.getChannelId() || SelectedChannelStore?.getChannelId();
+            
+            // Check if message is in current channel
+            if (event.channelId !== currentChannel && event.message?.channel_id !== currentChannel) return;
+
+            const authorId = event.message?.author?.id;
+
+            // Wait brief moment for store update
+            setTimeout(() => {
+                const result = attemptCopy(currentChannel, authorId);
+                if (result === "SUCCESS") {
+                    showToast("Auto-Copied!", getAssetIDByName("ic_check"));
+                }
+            }, 500);
+        });
+        unpatches.push(dispatchUnpatch);
     },
 
     onUnload: () => {
-        if (unpatch) unpatch();
+        for (const un of unpatches) un();
     },
 
     settings: () => {
+        const [auto, setAuto] = React.useState(storage.autoCopy);
+
         return (
             <View style={{ flex: 1 }}>
-                <FormSection title="Manual Action">
+                <FormSection title="Master Switch">
                     <FormRow
-                        label="Scan & Copy Last Code"
-                        subLabel="Tap to find and copy the last codeblock in this chat."
-                        leading={<General.Image source={getAssetIDByName("ic_copy_message_link")} style={{width: 24, height: 24}} />}
-                        onPress={() => runCopyLogic()} 
+                        label="Auto-Copy Enabled"
+                        subLabel={storage.targets.length > 0 ? "Targeting specific bots only." : "Copying ALL codeblocks (No targets set)."}
+                        control={<FormSwitch value={auto} onValueChange={(v) => { storage.autoCopy = v; setAuto(v); }} />}
+                    />
+                </FormSection>
+                <FormSection title="Watchlist Management">
+                    <FormRow label="Manage via Chat" subLabel="Use /autocopy add @User to target a specific bot." />
+                    <FormRow 
+                        label="Clear Watchlist" 
+                        subLabel={`Currently watching ${storage.targets.length} users.`}
+                        onPress={() => {
+                            storage.targets = [];
+                            showToast("List cleared (Copying ALL)");
+                        }}
                     />
                 </FormSection>
             </View>
