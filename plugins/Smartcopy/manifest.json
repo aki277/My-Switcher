@@ -3,8 +3,8 @@
     "description": "Automatically removes backticks (```) when copying codeblocks.",
     "authors": [
         {
-            "name": "Aki",
-            "id": "YOUR_ID_HERE"
+            "name": "aki277",
+            "id": "500305967641264128"
         }
     ],
     "main": "src/index.tsx",
