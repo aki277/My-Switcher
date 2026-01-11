@@ -1,111 +1,81 @@
-import { modules } from "@vendetta/metro";
+import { findByProps, findByDisplayName } from "@vendetta/metro";
 import { after } from "@vendetta/patcher";
-import { findByProps } from "@vendetta/metro";
 import { showToast } from "@vendetta/ui/toasts";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 
+// 1. Safe Imports
 const React = findByProps("createElement", "useState");
-const { View, TouchableOpacity, Image } = findByProps("View", "Image", "TouchableOpacity") || {};
+const { View, TouchableOpacity, Text, Image } = findByProps("View", "Image", "TouchableOpacity", "Text") || {};
 const Clipboard = findByProps("setString");
 
-// --- THE ULTIMATE HUNTER ---
-function findRulesAndKey() {
-    const allIds = Object.keys(modules);
-    
-    // We look for ANY module that has these basic keys
-    const basicKeys = ["paragraph", "text", "strong"];
-
-    for (const id of allIds) {
-        const mod = modules[id]?.publicModule?.exports;
-        if (!mod) continue;
-
-        // Helper to check an object
-        const check = (obj) => {
-            if (!obj) return null;
-            const keys = Object.keys(obj);
-            // Does it have the basics?
-            const hasBasics = basicKeys.every(k => keys.includes(k));
-            if (hasBasics) {
-                // SUCCESS! Now, what do they call codeblocks?
-                if (obj.fence) return { rules: obj, key: "fence" };
-                if (obj.codeBlock) return { rules: obj, key: "codeBlock" };
-                if (obj.code) return { rules: obj, key: "code" };
-                // If we found basics but no codeblock rule, it's weird, but return it anyway
-                return { rules: obj, key: null };
-            }
-            return null;
-        };
-
-        // Check common locations
-        let result = check(mod);
-        if (result) return result;
-        
-        result = check(mod.defaultRules);
-        if (result) return result;
-
-        result = check(mod.default);
-        if (result) return result;
-    }
-    return null;
+// 2. Find the "Message Accessories" component
+// This component renders the footer of a message (embeds, images, etc.)
+// It is the perfect safe place to inject our button.
+let MessageAccessories = findByDisplayName("MessageAccessories");
+if (!MessageAccessories) {
+    const mod = findByProps("MessageAccessories");
+    if (mod) MessageAccessories = mod.MessageAccessories;
 }
 
 let unpatch;
 
 export default {
     onLoad: () => {
-        try {
-            const found = findRulesAndKey();
+        // Safety Check
+        if (!MessageAccessories) {
+            showToast("Error: MessageAccessories not found", "ic_warning");
+            return;
+        }
 
-            if (!found) {
-                console.error("Smart Copy: Exhausted all search options.");
-                showToast("Fatal: Cannot find Markdown Engine.", "ic_warning");
-                return;
-            }
+        // 3. Patch the Accessories
+        unpatch = after("default", MessageAccessories, (args, res) => {
+            const message = args[0]?.message;
+            if (!message || !message.content) return res;
 
-            if (!found.key) {
-                showToast("Found Parser, but no CodeBlock rule!", "ic_warning");
-                return;
-            }
+            // 4. Check for Codeblocks using Regex
+            // Matches ``` ... ```
+            const codeBlockRegex = /```(?:[\w-]+\n)?([\s\S]+?)```/;
+            const match = message.content.match(codeBlockRegex);
 
-            // showToast(`Hooking into rule: ${found.key}`, "ic_check");
+            if (match) {
+                const codeContent = match[1]; // The actual code inside
 
-            // PATCH IT!
-            unpatch = after("react", found.rules[found.key], (args, res) => {
-                if (!res) return res;
-
-                // Robust content finder
-                const node = args[0];
-                const content = node.content || node.options?.content || "content_missing";
-
+                // 5. Create the "Copy Code" Button
                 const copyButton = React.createElement(TouchableOpacity, {
                     onPress: () => {
-                        Clipboard.setString(content);
-                        showToast("Copied!", getAssetIDByName("ic_check"));
+                        Clipboard.setString(codeContent.trim());
+                        showToast("Code Copied!", getAssetIDByName("ic_check"));
                     },
                     style: {
-                        position: "absolute",
-                        right: 4,
-                        top: 4,
-                        backgroundColor: "rgba(32, 34, 37, 0.9)", // Discord Dark
-                        borderRadius: 4,
-                        padding: 6,
-                        zIndex: 99,
-                        borderColor: "rgba(255,255,255,0.1)",
+                        marginTop: 8,
+                        backgroundColor: "#2f3136", // Discord Dark
+                        borderRadius: 8,
+                        paddingVertical: 8,
+                        paddingHorizontal: 12,
+                        alignSelf: "flex-start", // Don't stretch full width
+                        flexDirection: "row",
+                        alignItems: "center",
+                        borderColor: "#202225",
                         borderWidth: 1
                     }
-                }, React.createElement(Image, {
-                    source: getAssetIDByName("ic_copy_message_link") || getAssetIDByName("ic_copy"),
-                    style: { width: 16, height: 16, tintColor: "#ffffff" }
-                }));
+                }, [
+                    // Icon
+                    React.createElement(Image, {
+                        source: getAssetIDByName("ic_copy_message_link") || getAssetIDByName("ic_copy"),
+                        style: { width: 16, height: 16, tintColor: "#ffffff", marginRight: 6 }
+                    }),
+                    // Text Label
+                    React.createElement(Text, {
+                        style: { color: "#ffffff", fontWeight: "600", fontSize: 12 }
+                    }, "Copy Code")
+                ]);
 
-                // Safe Wrap
-                return React.createElement(View, { style: { position: "relative" } }, [res, copyButton]);
-            });
+                // 6. Append our button to the existing accessories (images/embeds)
+                return React.createElement(View, {}, [res, copyButton]);
+            }
 
-        } catch (e) {
-            console.error(e);
-            showToast(`Crash: ${e.message}`, "ic_warning");
-        }
+            return res;
+        });
     },
 
     onUnload: () => {
