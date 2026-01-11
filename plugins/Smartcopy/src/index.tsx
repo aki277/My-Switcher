@@ -2,52 +2,86 @@ import { findByProps } from "@vendetta/metro";
 import { registerCommand } from "@vendetta/commands";
 import { showToast } from "@vendetta/ui/toasts";
 import { getAssetIDByName } from "@vendetta/ui/assets";
-import { storage } from "@vendetta/plugin";
 import { Forms, General } from "@vendetta/ui/components";
+import { modules } from "@vendetta/metro";
 
-// Safe Imports
 const { FormSection, FormRow } = Forms;
 const { View } = General;
 
-// 1. Data Stores (Crash Proofing)
-const MessageStore = findByProps("getMessages", "getMessage");
+// 1. Safe Channel Finder
 const ChannelStore = findByProps("getChannelId");
-const SelectedChannelStore = findByProps("getChannelId", "getVoiceChannelId"); // Backup channel finder
+const SelectedChannelStore = findByProps("getChannelId", "getVoiceChannelId");
 const Clipboard = findByProps("setString");
 
 const CODE_REGEX = /```([\s\S]+?)```/;
 
-// THE MAIN LOGIC
-// We moved this into a function so both the Command AND the Button can use it.
+// --- THE STORE HUNTER ---
+// Finds the REAL MessageStore by testing them
+function findRealMessageStore(channelId) {
+    // 1. Get all modules with 'getMessages'
+    const candidates = [];
+    const allIds = Object.keys(modules);
+    
+    for (const id of allIds) {
+        const mod = modules[id]?.publicModule?.exports;
+        if (mod && mod.getMessages && typeof mod.getMessages === 'function') {
+            candidates.push(mod);
+        } else if (mod && mod.default && mod.default.getMessages && typeof mod.default.getMessages === 'function') {
+            candidates.push(mod.default);
+        }
+    }
+
+    // 2. Test them!
+    for (const candidate of candidates) {
+        try {
+            const result = candidate.getMessages(channelId);
+            // If it returns a Map or Array with items, we found it!
+            if (result && (result._array || result.length > 0 || (result.size && result.size > 0))) {
+                return candidate;
+            }
+        } catch (e) {
+            // Ignore crashes during testing
+        }
+    }
+    return null;
+}
+
 function runCopyLogic() {
     try {
-        // Try multiple ways to get the channel ID
+        // 1. Get Channel
         const channelId = ChannelStore?.getChannelId() || SelectedChannelStore?.getChannelId();
+        if (!channelId) return showToast("Error: No Channel ID found.", "ic_warning");
+
+        // 2. Find the Store that actually works
+        const RealMessageStore = findRealMessageStore(channelId);
         
-        if (!channelId) {
-            showToast("Error: Could not find Channel ID.", "ic_warning");
-            return;
+        if (!RealMessageStore) {
+            return showToast("Fatal: Could not find a working MessageStore.", "ic_warning");
         }
 
-        // Get Messages
-        const messagesObj = MessageStore.getMessages(channelId);
-        if (!messagesObj) {
-            showToast("Error: Could not read messages.", "ic_warning");
-            return;
+        // 3. Get Messages
+        const messagesObj = RealMessageStore.getMessages(channelId);
+        // Handle Map vs Array
+        let messages = [];
+        if (Array.isArray(messagesObj)) {
+            messages = messagesObj;
+        } else if (messagesObj._array) {
+            messages = messagesObj._array; // Common in Flux stores
+        } else if (typeof messagesObj.toArray === 'function') {
+            messages = messagesObj.toArray();
+        } else {
+            messages = Object.values(messagesObj);
         }
 
-        const messages = messagesObj.toArray ? messagesObj.toArray() : Object.values(messagesObj);
-        
         if (!messages || messages.length === 0) {
-            showToast("Chat appears empty.", "ic_warning");
-            return;
+            return showToast("Chat seems empty (or store failed).", "ic_warning");
         }
 
-        // Search Loop
-        const foundMsg = messages.reverse().find(msg => {
-            // Text
+        // 4. Scan for Code (Newest first)
+        const foundMsg = messages.slice().reverse().find(msg => {
+            // Check Content
             if (msg.content && CODE_REGEX.test(msg.content)) return true;
-            // Embeds
+            // Check Embeds
             if (msg.embeds && msg.embeds.length > 0) {
                 return msg.embeds.some(embed => {
                     if (embed.description && CODE_REGEX.test(embed.description)) return true;
@@ -60,7 +94,7 @@ function runCopyLogic() {
 
         if (foundMsg) {
             let rawCode = "";
-            // Extract
+            // Extract logic
             if (foundMsg.content && CODE_REGEX.test(foundMsg.content)) {
                 rawCode = foundMsg.content.match(CODE_REGEX)[1];
             } else if (foundMsg.embeds) {
@@ -81,11 +115,10 @@ function runCopyLogic() {
                 Clipboard.setString(rawCode.trim());
                 showToast("Copied to Clipboard!", getAssetIDByName("ic_check"));
             } else {
-                showToast("Found block but failed to extract.", "ic_warning");
+                showToast("Extraction failed.", "ic_warning");
             }
-
         } else {
-            showToast("No code blocks found in recent messages.", "ic_warning");
+            showToast("No code blocks found recently.", "ic_warning");
         }
 
     } catch (e) {
@@ -98,7 +131,7 @@ let unpatch;
 
 export default {
     onLoad: () => {
-        // Try to register the command
+        // Try to register command
         try {
             unpatch = registerCommand({
                 name: "copycode",
@@ -109,31 +142,25 @@ export default {
                 applicationId: "-1",
                 inputType: 1,
                 type: 1,
-                execute: runCopyLogic // Just run the shared function
+                execute: runCopyLogic
             });
-        } catch (e) {
-            console.error("Failed to register command", e);
-        }
+        } catch (e) {}
     },
 
     onUnload: () => {
         if (unpatch) unpatch();
     },
 
-    // SETTINGS MENU (The Backup Plan)
     settings: () => {
         return (
             <View style={{ flex: 1 }}>
-                <FormSection title="Manual Trigger">
+                <FormSection title="Manual Action">
                     <FormRow
-                        label="Scan Chat & Copy Code"
-                        subLabel="Tap this if the slash command fails"
+                        label="Scan & Copy Last Code"
+                        subLabel="Tap to find and copy the last codeblock in this chat."
                         leading={<General.Image source={getAssetIDByName("ic_copy_message_link")} style={{width: 24, height: 24}} />}
                         onPress={() => runCopyLogic()} 
                     />
-                </FormSection>
-                <FormSection title="Info">
-                    <FormRow label="How to use" subLabel="1. Go to a channel with code.\n2. Come here and tap the button above.\n3. Or try typing /copycode" />
                 </FormSection>
             </View>
         );
