@@ -1,5 +1,6 @@
-import { findByProps } from "@vendetta/metro";
+import { modules } from "@vendetta/metro";
 import { after } from "@vendetta/patcher";
+import { findByProps } from "@vendetta/metro";
 import { showToast } from "@vendetta/ui/toasts";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 
@@ -8,34 +9,58 @@ const React = findByProps("createElement", "useState");
 const { View, TouchableOpacity, Image } = findByProps("View", "Image", "TouchableOpacity") || {};
 const Clipboard = findByProps("setString");
 
-// 2. Find the Markdown Rules
-// Discord keeps these in a module that usually has 'defaultRules' or 'parser'
-const MarkdownModule = findByProps("defaultRules", "parse");
+// 2. The Deep Scanner
+// This loops through every module in the app to find the Markdown Rules
+function findMarkdownRules() {
+    const allIds = Object.keys(modules);
+    
+    for (const id of allIds) {
+        const mod = modules[id]?.publicModule?.exports;
+        if (!mod) continue;
 
+        // Check Case A: The module contains "defaultRules"
+        if (mod.defaultRules && mod.defaultRules.fence && mod.defaultRules.link) {
+            return mod.defaultRules;
+        }
+
+        // Check Case B: The module IS the rules object
+        if (mod.fence && mod.link && mod.blockQuote) {
+            return mod;
+        }
+        
+        // Check Case C: Default export is the rules
+        if (mod.default && mod.default.fence && mod.default.link) {
+            return mod.default;
+        }
+    }
+    return null;
+}
+
+// Run the scan once
+const Rules = findMarkdownRules();
 let unpatch;
 
 export default {
     onLoad: () => {
         try {
-            if (!MarkdownModule || !MarkdownModule.defaultRules || !MarkdownModule.defaultRules.fence) {
-                console.error("Smart Copy: Could not find Markdown Rules.");
-                showToast("Error: Markdown rules not found!", "ic_warning");
+            if (!Rules || !Rules.fence) {
+                console.error("Smart Copy: Deep Scan failed.");
+                showToast("Error: Could not find Fence Rule even after Deep Scan.", "ic_warning");
                 return;
             }
 
-            // 3. Patch the 'fence' rule
-            // The 'react' function inside the rule is responsible for drawing the codeblock
-            unpatch = after("react", MarkdownModule.defaultRules.fence, (args, res) => {
-                // Safety: If it didn't return anything, skip
+            // 3. Patch the 'react' method of the fence rule
+            // This method is what actually draws the codeblock on screen
+            unpatch = after("react", Rules.fence, (args, res) => {
                 if (!res) return res;
 
-                // The content is usually in the second argument (the state) or inside the node
-                const node = args[0]; // The data for this codeblock
+                // The text content is typically inside the node (args[0])
+                const node = args[0];
                 const codeContent = node.content;
 
                 if (!codeContent) return res;
 
-                // Create our Floating Button
+                // Create the Button
                 const copyButton = React.createElement(TouchableOpacity, {
                     onPress: () => {
                         Clipboard.setString(codeContent);
@@ -45,7 +70,7 @@ export default {
                         position: "absolute",
                         right: 6,
                         top: 6,
-                        backgroundColor: "#202225", // Dark background
+                        backgroundColor: "#202225",
                         borderRadius: 4,
                         padding: 5,
                         zIndex: 10,
@@ -58,8 +83,7 @@ export default {
                     style: { width: 14, height: 14, tintColor: "#dcddde" }
                 }));
 
-                // WRAP IT: Take the original output (res) and put it in a View with our button
-                // We use 'relative' position so our 'absolute' button stays inside the box
+                // Wrap the original result (res) in a View to hold our button
                 return React.createElement(View, { style: { position: "relative" } }, [res, copyButton]);
             });
 
