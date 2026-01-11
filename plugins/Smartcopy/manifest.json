@@ -1,6 +1,6 @@
 {
     "name": "Smart Copy",
-    "description": "Automatically removes backticks (```) when copying codeblocks.",
+    "description": "Automatically removes backticks (```) when copying codeblocks",
     "authors": [
         {
             "name": "aki277",
