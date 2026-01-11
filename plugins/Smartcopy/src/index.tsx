@@ -2,46 +2,46 @@ import { findByProps } from "@vendetta/metro";
 import { before } from "@vendetta/patcher";
 import { showToast } from "@vendetta/ui/toasts";
 
-// Robust Clipboard finder
 const Clipboard = findByProps("setString");
 
 let unpatch;
 
 export default {
     onLoad: () => {
-        if (!Clipboard) {
-            showToast("Error: Clipboard module not found", "ic_warning");
-            return;
-        }
+        if (!Clipboard) return;
 
         unpatch = before("setString", Clipboard, (args) => {
             let text = args[0];
-            
-            // Safety check: ensure we are copying text
             if (typeof text !== 'string') return;
 
-            // 1. Trim invisible spaces/newlines from the start and end
-            // (This fixes the "it's still showing" bug)
-            const trimmed = text.trim();
+            // Remove whitespace/newlines from start and end
+            text = text.trim();
 
-            // 2. The Smart Pattern
-            // ^```       -> Starts with ```
-            // (?:...)?   -> Optional Language name (ignored)
-            // ([\s\S]+?) -> Capture the ACTUAL CODE (Group 1)
-            // ```$       -> Ends with ```
-            const codeBlockRegex = /^```(?:[\w-]+\n)?([\s\S]+?)```$/;
+            // CHECK: Does it start and end with triple backticks?
+            if (text.startsWith("```") && text.endsWith("```")) {
+                
+                // 1. Remove the first 3 characters (```)
+                let clean = text.slice(3);
+                
+                // 2. Remove the last 3 characters (```)
+                clean = clean.slice(0, -3);
+                
+                // 3. CLEANUP:
+                // Remove the first line if it looks like a language name (e.g., "js", "text", "html")
+                // We assume if the first line is short (under 15 chars) and has no spaces, it's a language tag.
+                const firstNewLine = clean.indexOf("\n");
+                if (firstNewLine !== -1 && firstNewLine < 15) {
+                    const firstLine = clean.substring(0, firstNewLine).trim();
+                    if (!firstLine.includes(" ")) {
+                        // It's likely a language tag, chop it off
+                        clean = clean.substring(firstNewLine + 1);
+                    }
+                }
 
-            const match = trimmed.match(codeBlockRegex);
-
-            if (match) {
-                // Found a codeblock!
-                // match[1] is the clean code inside
-                args[0] = match[1];
+                // 4. Final trim to remove any leftover newlines
+                args[0] = clean.trim();
+                
                 showToast("Code copied (Cleaned!)", "ic_copy_message_link");
-            } else {
-                // Debugging: If you don't see this toast, the plugin isn't running on this copy
-                // Uncomment the line below if you are still having trouble
-                // showToast("Normal text copied", "ic_copy");
             }
         });
     },
