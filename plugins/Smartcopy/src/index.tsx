@@ -1,48 +1,65 @@
-import { findByProps } from "@vendetta/metro";
-import { before } from "@vendetta/patcher";
+import { findByByName, findByProps } from "@vendetta/metro";
+import { after } from "@vendetta/patcher";
+import { React } from "@vendetta/metro/common";
 import { showToast } from "@vendetta/ui/toasts";
+import { getAssetIDByName } from "@vendetta/ui/assets";
 
+// Find React Native components
+const { View, TouchableOpacity, Image } = findByProps("View", "Image", "TouchableOpacity");
 const Clipboard = findByProps("setString");
+
+// The component that renders codeblocks
+const CodeBlock = findByByName("CodeBlock");
 
 let unpatch;
 
 export default {
     onLoad: () => {
-        if (!Clipboard) return;
+        // Safety check: ensure we found the component
+        if (!CodeBlock) {
+            showToast("Failed to find CodeBlock component", "ic_warning");
+            return;
+        }
 
-        unpatch = before("setString", Clipboard, (args) => {
-            let text = args[0];
-            if (typeof text !== 'string') return;
+        // Hook into the 'render' function of CodeBlock
+        unpatch = after("default", CodeBlock, (args, res) => {
+            // args[0] usually contains the props (including the code text)
+            const codeContent = args[0]?.content;
+            
+            if (!codeContent) return res;
 
-            // Remove whitespace/newlines from start and end
-            text = text.trim();
+            // Create a button icon
+            const copyIcon = (
+                <TouchableOpacity
+                    onPress={() => {
+                        Clipboard.setString(codeContent);
+                        showToast("Copied to clipboard!", getAssetIDByName("ic_check"));
+                    }}
+                    style={{
+                        position: "absolute",
+                        right: 4,
+                        top: 4,
+                        backgroundColor: "#2f3136", // Dark background for visibility
+                        borderRadius: 4,
+                        padding: 4,
+                        zIndex: 10,
+                        opacity: 0.8
+                    }}
+                >
+                    <Image 
+                        source={getAssetIDByName("ic_copy_message_link")} 
+                        style={{ width: 16, height: 16, tintColor: "#ffffff" }} 
+                    />
+                </TouchableOpacity>
+            );
 
-            // CHECK: Does it start and end with triple backticks?
-            if (text.startsWith("```") && text.endsWith("```")) {
-                
-                // 1. Remove the first 3 characters (```)
-                let clean = text.slice(3);
-                
-                // 2. Remove the last 3 characters (```)
-                clean = clean.slice(0, -3);
-                
-                // 3. CLEANUP:
-                // Remove the first line if it looks like a language name (e.g., "js", "text", "html")
-                // We assume if the first line is short (under 15 chars) and has no spaces, it's a language tag.
-                const firstNewLine = clean.indexOf("\n");
-                if (firstNewLine !== -1 && firstNewLine < 15) {
-                    const firstLine = clean.substring(0, firstNewLine).trim();
-                    if (!firstLine.includes(" ")) {
-                        // It's likely a language tag, chop it off
-                        clean = clean.substring(firstNewLine + 1);
-                    }
-                }
-
-                // 4. Final trim to remove any leftover newlines
-                args[0] = clean.trim();
-                
-                showToast("Code copied (Cleaned!)", "ic_copy_message_link");
-            }
+            // Wrap the original codeblock (res) in a View and add our button
+            return (
+                <View>
+                    {res}
+                    {copyIcon}
+                </View>
+            );
         });
     },
 
