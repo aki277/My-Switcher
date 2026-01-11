@@ -1,0 +1,14 @@
+{
+    "name": "Smart Copy",
+    "description": "Automatically removes backticks (```) when copying codeblocks.",
+    "authors": [
+        {
+            "name": "Aki",
+            "id": "YOUR_ID_HERE"
+        }
+    ],
+    "main": "src/index.tsx",
+    "vendetta": {
+        "icon": "ic_copy_message_link"
+    }
+}
