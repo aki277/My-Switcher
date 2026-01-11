@@ -2,35 +2,46 @@ import { findByProps } from "@vendetta/metro";
 import { before } from "@vendetta/patcher";
 import { showToast } from "@vendetta/ui/toasts";
 
-// Find the Clipboard module
+// Robust Clipboard finder
 const Clipboard = findByProps("setString");
 
 let unpatch;
 
 export default {
     onLoad: () => {
-        // "before" runs BEFORE the real copy function. 
-        // We can change the text before it hits the clipboard.
+        if (!Clipboard) {
+            showToast("Error: Clipboard module not found", "ic_warning");
+            return;
+        }
+
         unpatch = before("setString", Clipboard, (args) => {
-            const originalText = args[0];
+            let text = args[0];
+            
+            // Safety check: ensure we are copying text
+            if (typeof text !== 'string') return;
 
-            // Check if the text is a codeblock (starts/ends with ```)
-            if (typeof originalText === 'string' && originalText.startsWith("```") && originalText.endsWith("```")) {
-                
-                // 1. Remove the first 3 backticks
-                let cleanText = originalText.slice(3);
-                
-                // 2. Remove the last 3 backticks
-                cleanText = cleanText.slice(0, -3);
+            // 1. Trim invisible spaces/newlines from the start and end
+            // (This fixes the "it's still showing" bug)
+            const trimmed = text.trim();
 
-                // 3. Remove the language name (e.g., "typescript" or "js") from the first line
-                // This Regex looks for the first newline and removes everything before it
-                cleanText = cleanText.replace(/^[a-zA-Z0-9+\-]*\n/, "");
+            // 2. The Smart Pattern
+            // ^```       -> Starts with ```
+            // (?:...)?   -> Optional Language name (ignored)
+            // ([\s\S]+?) -> Capture the ACTUAL CODE (Group 1)
+            // ```$       -> Ends with ```
+            const codeBlockRegex = /^```(?:[\w-]+\n)?([\s\S]+?)```$/;
 
-                // 4. Update the arguments with our clean text
-                args[0] = cleanText.trim();
-                
-                showToast("Copied Code (Cleaned!)", "ic_copy_message_link");
+            const match = trimmed.match(codeBlockRegex);
+
+            if (match) {
+                // Found a codeblock!
+                // match[1] is the clean code inside
+                args[0] = match[1];
+                showToast("Code copied (Cleaned!)", "ic_copy_message_link");
+            } else {
+                // Debugging: If you don't see this toast, the plugin isn't running on this copy
+                // Uncomment the line below if you are still having trouble
+                // showToast("Normal text copied", "ic_copy");
             }
         });
     },
