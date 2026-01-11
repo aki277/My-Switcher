@@ -4,90 +4,103 @@ import { findByProps } from "@vendetta/metro";
 import { showToast } from "@vendetta/ui/toasts";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 
-// 1. Safe Imports
 const React = findByProps("createElement", "useState");
 const { View, TouchableOpacity, Image } = findByProps("View", "Image", "TouchableOpacity") || {};
 const Clipboard = findByProps("setString");
 
-// 2. The Deep Scanner
-// This loops through every module in the app to find the Markdown Rules
-function findMarkdownRules() {
+// --- THE ULTIMATE HUNTER ---
+function findRulesAndKey() {
     const allIds = Object.keys(modules);
     
+    // We look for ANY module that has these basic keys
+    const basicKeys = ["paragraph", "text", "strong"];
+
     for (const id of allIds) {
         const mod = modules[id]?.publicModule?.exports;
         if (!mod) continue;
 
-        // Check Case A: The module contains "defaultRules"
-        if (mod.defaultRules && mod.defaultRules.fence && mod.defaultRules.link) {
-            return mod.defaultRules;
-        }
+        // Helper to check an object
+        const check = (obj) => {
+            if (!obj) return null;
+            const keys = Object.keys(obj);
+            // Does it have the basics?
+            const hasBasics = basicKeys.every(k => keys.includes(k));
+            if (hasBasics) {
+                // SUCCESS! Now, what do they call codeblocks?
+                if (obj.fence) return { rules: obj, key: "fence" };
+                if (obj.codeBlock) return { rules: obj, key: "codeBlock" };
+                if (obj.code) return { rules: obj, key: "code" };
+                // If we found basics but no codeblock rule, it's weird, but return it anyway
+                return { rules: obj, key: null };
+            }
+            return null;
+        };
 
-        // Check Case B: The module IS the rules object
-        if (mod.fence && mod.link && mod.blockQuote) {
-            return mod;
-        }
+        // Check common locations
+        let result = check(mod);
+        if (result) return result;
         
-        // Check Case C: Default export is the rules
-        if (mod.default && mod.default.fence && mod.default.link) {
-            return mod.default;
-        }
+        result = check(mod.defaultRules);
+        if (result) return result;
+
+        result = check(mod.default);
+        if (result) return result;
     }
     return null;
 }
 
-// Run the scan once
-const Rules = findMarkdownRules();
 let unpatch;
 
 export default {
     onLoad: () => {
         try {
-            if (!Rules || !Rules.fence) {
-                console.error("Smart Copy: Deep Scan failed.");
-                showToast("Error: Could not find Fence Rule even after Deep Scan.", "ic_warning");
+            const found = findRulesAndKey();
+
+            if (!found) {
+                console.error("Smart Copy: Exhausted all search options.");
+                showToast("Fatal: Cannot find Markdown Engine.", "ic_warning");
                 return;
             }
 
-            // 3. Patch the 'react' method of the fence rule
-            // This method is what actually draws the codeblock on screen
-            unpatch = after("react", Rules.fence, (args, res) => {
+            if (!found.key) {
+                showToast("Found Parser, but no CodeBlock rule!", "ic_warning");
+                return;
+            }
+
+            // showToast(`Hooking into rule: ${found.key}`, "ic_check");
+
+            // PATCH IT!
+            unpatch = after("react", found.rules[found.key], (args, res) => {
                 if (!res) return res;
 
-                // The text content is typically inside the node (args[0])
+                // Robust content finder
                 const node = args[0];
-                const codeContent = node.content;
+                const content = node.content || node.options?.content || "content_missing";
 
-                if (!codeContent) return res;
-
-                // Create the Button
                 const copyButton = React.createElement(TouchableOpacity, {
                     onPress: () => {
-                        Clipboard.setString(codeContent);
+                        Clipboard.setString(content);
                         showToast("Copied!", getAssetIDByName("ic_check"));
                     },
                     style: {
                         position: "absolute",
-                        right: 6,
-                        top: 6,
-                        backgroundColor: "#202225",
+                        right: 4,
+                        top: 4,
+                        backgroundColor: "rgba(32, 34, 37, 0.9)", // Discord Dark
                         borderRadius: 4,
-                        padding: 5,
-                        zIndex: 10,
-                        opacity: 0.9,
-                        borderColor: "#40444b",
+                        padding: 6,
+                        zIndex: 99,
+                        borderColor: "rgba(255,255,255,0.1)",
                         borderWidth: 1
                     }
                 }, React.createElement(Image, {
                     source: getAssetIDByName("ic_copy_message_link") || getAssetIDByName("ic_copy"),
-                    style: { width: 14, height: 14, tintColor: "#dcddde" }
+                    style: { width: 16, height: 16, tintColor: "#ffffff" }
                 }));
 
-                // Wrap the original result (res) in a View to hold our button
+                // Safe Wrap
                 return React.createElement(View, { style: { position: "relative" } }, [res, copyButton]);
             });
-
-            showToast("Smart Copy: Hooked into Fence Rule!", "ic_check");
 
         } catch (e) {
             console.error(e);
